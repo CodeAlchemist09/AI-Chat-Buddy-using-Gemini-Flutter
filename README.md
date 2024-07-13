@@ -1,12 +1,4 @@
-<!-- PROJECT SHIELDS -->
-
-<p align="center">
-  <a href="https://github.com/yatendra2001/ai_buddy/network/members"><img src="https://img.shields.io/github/forks/yatendra2001/ai_buddy.svg?style=for-the-badge" alt="Forks"></a>
-  <a href="https://github.com/yatendra2001/ai_buddy/stargazers"><img src="https://img.shields.io/github/stars/yatendra2001/ai_buddy.svg?style=for-the-badge" alt="Stargazers"></a>
-  <a href="https://github.com/yatendra2001/ai_buddy/issues"><img src="https://img.shields.io/github/issues/yatendra2001/ai_buddy.svg?style=for-the-badge" alt="Issues"></a>
-  <a href="https://github.com/yatendra2001/ai_buddy/blob/main/LICENSE.txt"><img src="https://img.shields.io/github/license/yatendra2001/ai_buddy.svg?style=for-the-badge" alt="GPL License"></a>
-</p>
-
+# AI Buddy using Gemini LLM and Flutter
 
 
 <!-- PROJECT LOGO -->
@@ -21,16 +13,6 @@
   <h4 align="center">
     Your personal completely open-sourced and free-to-use AI assistant, built with gemini & flutter.
   </h4>
-  
-  <!-- Download Buttons -->
-  <div>
-    <a href="https://play.google.com/store/apps/details?id=com.superawesomeapps.ai_buddy">
-      <img width="135" alt="Store=Google Play, Style=Black" src="https://github.com/yatendra2001/ai_buddy/assets/62821607/9b03e51f-7bbf-40c7-bcdc-b1888f165fbb">
-    </a>
-    <a href="https://apple.co/3OSmiDd">
-      <img width="120" alt="Store=App Store, Style=Black" src="https://github.com/yatendra2001/ai_buddy/assets/62821607/6c8c9e04-f66f-4fe8-a4b0-167324326f17">
-    </a>
-  </div>
 </div> 
 
 
@@ -102,7 +84,7 @@ Need the latest flutter version & a gemini api key from [here](https://makersuit
 1. Clone the repository from GitHub:
 
 ```bash
-git clone https://github.com/yatendra2001/ai_buddy.git
+git clone https://github.com/CodeAlchemist09/AI-Chat-Buddy-using-Gemini-Flutter.git
 ```
 
 2. Get all dependencies:
@@ -117,60 +99,5 @@ flutter run
 ```
 
 
-<!-- CONTRIBUTING -->
-## Contributing
-
-Contributions are what makes the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
-
-
-Contribution to the project can be made if you have some improvements for the project or if you find some bugs.
-You can contribute to the project by reporting issues, forking it, modifying the code and making a pull request to the repository.
-
-Please make sure you specify the commit type when opening pull requests:
-
-```
-feat: The new feature you're proposing
-
-fix: A bug fix in the project
-
-style: Feature and updates related to UI improvements and styling
-
-test: Everything related to testing
-
-docs: Everything related to documentation
-
-refactor: Regular code refactoring and maintenance
-```
-
-To know more extensively about how to contribute to this project, read our [Contribution Guide](https://github.com/yatendra2001/ai_buddy/blob/main/CONTRIBUTING.md).
-
-
-<!-- LICENSE -->
-## License
-
-Distributed under the AGPL-3.0 license. See `LICENSE` for more information.
-
-
-<!-- CONTACT -->
-## Contact
-
-
-Twitter: [@iamyatendrak](https://twitter.com/iamyatendrak)
-
-LinkedIn: [linkedin](https://www.linkedin.com/in/iamyatendrak/)
 
 ### Make sure to leave us a ⭐️
-
-
-<!-- MARKDOWN LINKS & IMAGES -->
-<!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
-[contributors-shield]: https://img.shields.io/github/contributors/yatendra2001/ai_buddy.svg?style=for-the-badge
-[contributors-url]: https://github.com/yatendra2001/ai_buddy/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/yatendra2001/ai_buddy.svg?style=for-the-badge
-[forks-url]: https://github.com/yatendra2001/ai_buddy/network/members
-[stars-shield]: https://img.shields.io/github/stars/yatendra2001/ai_buddy.svg?style=for-the-badge
-[stars-url]: https://github.com/yatendra2001/ai_buddy/stargazers
-[issues-shield]: https://img.shields.io/github/issues/yatendra2001/ai_buddy.svg?style=for-the-badge
-[issues-url]: https://github.com/yatendra2001/ai_buddy/issues
-[license-shield]: https://img.shields.io/github/license/yatendra2001/ai_buddy.svg?style=for-the-badge
-[license-url]: https://github.com/yatendra2001/ai_buddy/blob/main/LICENSE.txt
