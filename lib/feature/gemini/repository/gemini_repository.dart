@@ -22,7 +22,65 @@ class GeminiRepository extends BaseGeminiRepository {
 
   static const baseUrl =
       'https://generativelanguage.googleapis.com/v1beta/models';
-  static const defaultModel = 'gemini-1.5-flash';
+
+  // Cached active model name to prevent 404s
+  static String? _resolvedModel;
+
+  /// Dynamically queries the Google Generative Language API to find an active
+  /// model supporting generateContent for the given API key.
+  Future<String> resolveActiveModel(String apiKey) async {
+    if (_resolvedModel != null) return _resolvedModel!;
+
+    try {
+      final res = await dio.get<Map<String, dynamic>>(
+        'https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey',
+        options: Options(
+          responseType: ResponseType.json,
+          headers: {'Content-Type': 'application/json'},
+        ),
+      );
+      final modelsList = res.data?['models'] as List?;
+      if (modelsList != null && modelsList.isNotEmpty) {
+        // Look for modern Flash models first
+        for (final m in modelsList) {
+          if (m is Map) {
+            final name = m['name']?.toString() ?? '';
+            final methods = (m['supportedGenerationMethods'] as List?)
+                    ?.map((e) => e.toString())
+                    .toList() ??
+                [];
+            if (methods.contains('generateContent') &&
+                name.toLowerCase().contains('flash')) {
+              _resolvedModel = name.replaceFirst('models/', '');
+              logInfo('Resolved active Gemini Flash model: $_resolvedModel');
+              return _resolvedModel!;
+            }
+          }
+        }
+        // Fallback: any model supporting generateContent
+        for (final m in modelsList) {
+          if (m is Map) {
+            final name = m['name']?.toString() ?? '';
+            final methods = (m['supportedGenerationMethods'] as List?)
+                    ?.map((e) => e.toString())
+                    .toList() ??
+                [];
+            if (methods.contains('generateContent')) {
+              _resolvedModel = name.replaceFirst('models/', '');
+              logInfo('Resolved active Gemini model: $_resolvedModel');
+              return _resolvedModel!;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      logError('Could not dynamically list models: $e');
+    }
+
+    // Default to gemini-2.0-flash if model list is unreachable
+    _resolvedModel = 'gemini-2.0-flash';
+    return _resolvedModel!;
+  }
 
   /// Streams content from the Gemini API using Server-Sent Events (SSE)
   /// or robust JSON chunk parsing. Supports multi-turn conversations,
@@ -44,7 +102,8 @@ class GeminiRepository extends BaseGeminiRepository {
       );
     }
 
-    final targetModel = model ?? defaultModel;
+    final apiKey = geminiAPIKey.trim();
+    String targetModel = model ?? await resolveActiveModel(apiKey);
 
     // Build the contents list
     final List<Map<String, dynamic>> apiContents = [];
@@ -72,7 +131,9 @@ class GeminiRepository extends BaseGeminiRepository {
     if (apiContents.isEmpty) {
       apiContents.add({
         'role': 'user',
-        'parts': [{'text': 'Hello'}],
+        'parts': [
+          {'text': 'Hello'}
+        ],
       });
     }
 
@@ -85,7 +146,6 @@ class GeminiRepository extends BaseGeminiRepository {
         },
       };
 
-      // Add to the first or latest user message parts
       final userIndex = apiContents.lastIndexWhere((c) => c['role'] == 'user');
       if (userIndex != -1) {
         final existingParts = ((apiContents[userIndex]['parts'] as List?) ?? [])
@@ -149,33 +209,60 @@ class GeminiRepository extends BaseGeminiRepository {
       ],
     };
 
-    final apiKey = geminiAPIKey.trim();
-    final url = '$baseUrl/$targetModel:streamGenerateContent?alt=sse&key=$apiKey';
+    Response<ResponseBody>? response;
 
-    Response<ResponseBody> response;
-    try {
-      response = await dio.post<ResponseBody>(
-        url,
-        options: Options(
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream',
-          },
-          responseType: ResponseType.stream,
-        ),
-        data: jsonEncode(requestPayload),
-      );
-    } on DioException catch (dioErr) {
-      final errorMsg = _extractDioErrorMessage(dioErr);
-      logError('DioException in streamContent: $errorMsg');
-      throw Exception(errorMsg);
-    } catch (e) {
-      logError('Network error in streamContent: $e');
-      throw Exception('Connection failed: $e');
+    // List of model fallbacks in case targetModel returns 404
+    final candidateModels = [
+      targetModel,
+      'gemini-2.0-flash',
+      'gemini-2.5-flash',
+      'gemini-1.5-flash-latest',
+      'gemini-pro',
+    ];
+
+    DioException? lastDioException;
+
+    for (final candidate in candidateModels.toSet()) {
+      final url =
+          '$baseUrl/$candidate:streamGenerateContent?alt=sse&key=$apiKey';
+      try {
+        response = await dio.post<ResponseBody>(
+          url,
+          options: Options(
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'text/event-stream',
+            },
+            responseType: ResponseType.stream,
+          ),
+          data: jsonEncode(requestPayload),
+        );
+        _resolvedModel = candidate;
+        break; // Successfully connected!
+      } on DioException catch (dioErr) {
+        lastDioException = dioErr;
+        if (dioErr.response?.statusCode == 404) {
+          logError('Model $candidate returned 404. Trying next candidate...');
+          _resolvedModel = null;
+          continue; // try next candidate model
+        } else {
+          // Other error (400, 403, 429), rethrow immediately
+          final errorMsg = await _extractDioErrorMessage(dioErr);
+          logError('DioException in streamContent: $errorMsg');
+          throw Exception(errorMsg);
+        }
+      } catch (e) {
+        logError('Network error in streamContent: $e');
+        throw Exception('Connection failed: $e');
+      }
     }
 
-    if (response.statusCode != 200) {
-      throw Exception('Gemini API returned HTTP status ${response.statusCode}');
+    if (response == null || response.statusCode != 200) {
+      if (lastDioException != null) {
+        final errorMsg = await _extractDioErrorMessage(lastDioException);
+        throw Exception(errorMsg);
+      }
+      throw Exception('Failed to connect to Gemini API.');
     }
 
     final ResponseBody rb = response.data!;
@@ -213,7 +300,8 @@ class GeminiRepository extends BaseGeminiRepository {
 
       String candidateJson = buffer.trim();
       if (candidateJson.endsWith(']')) {
-        candidateJson = candidateJson.substring(0, candidateJson.length - 1).trim();
+        candidateJson =
+            candidateJson.substring(0, candidateJson.length - 1).trim();
       }
 
       try {
@@ -223,7 +311,8 @@ class GeminiRepository extends BaseGeminiRepository {
         if (decoded is Map<String, dynamic>) {
           if (decoded.containsKey('error')) {
             final errorMap = decoded['error'] as Map<String, dynamic>?;
-            final message = errorMap?['message']?.toString() ?? 'Gemini API returned an error';
+            final message = errorMap?['message']?.toString() ??
+                'Gemini API returned an error';
             throw Exception(message);
           }
 
@@ -246,16 +335,25 @@ class GeminiRepository extends BaseGeminiRepository {
   }
 
   /// Extracts user-friendly error message from DioException
-  String _extractDioErrorMessage(DioException dioErr) {
+  Future<String> _extractDioErrorMessage(DioException dioErr) async {
     if (dioErr.response?.data != null) {
       try {
         final data = dioErr.response!.data;
         if (data is Map && data.containsKey('error')) {
-          return data['error']['message']?.toString() ?? 'API error (${dioErr.response?.statusCode})';
+          return data['error']['message']?.toString() ??
+              'API error (${dioErr.response?.statusCode})';
         }
         if (data is ResponseBody) {
-          // ResponseBody cannot be read directly here; status code is available
-          return 'Gemini error (HTTP ${dioErr.response?.statusCode}): Check API key or model availability.';
+          final errorBytes = await data.stream.toList();
+          final flatBytes = errorBytes.expand((i) => i).toList();
+          final errorString = utf8.decode(flatBytes);
+          final decoded = jsonDecode(errorString);
+          if (decoded is Map && decoded.containsKey('error')) {
+            final errorObj = decoded['error'];
+            if (errorObj is Map && errorObj.containsKey('message')) {
+              return errorObj['message'].toString();
+            }
+          }
         }
         if (data is String) {
           final decoded = jsonDecode(data);
@@ -278,7 +376,7 @@ class GeminiRepository extends BaseGeminiRepository {
       return 'Permission denied. Make sure your API key has access to the Gemini API.';
     }
     if (dioErr.response?.statusCode == 404) {
-      return 'Model not found or currently unavailable.';
+      return 'Model not found. Please check model availability for your API key.';
     }
     if (dioErr.response?.statusCode == 429) {
       return 'Gemini API quota exceeded. Please wait a moment or check your billing plan.';
