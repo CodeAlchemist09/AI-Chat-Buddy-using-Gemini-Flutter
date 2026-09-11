@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:ai_buddy/core/logger/logger.dart';
 import 'package:ai_buddy/feature/gemini/repository/gemini_repository.dart';
 import 'package:ai_buddy/feature/hive/model/chat_bot/chat_bot.dart';
 import 'package:ai_buddy/feature/hive/repository/hive_repository.dart';
@@ -24,11 +25,19 @@ class ChatBotListNotifier extends StateNotifier<List<ChatBot>> {
   late final Dio dio;
   late final GeminiRepository geminiRepository;
 
-  Future<String?>? attachImageFilePath() async {
-    final pickedFile = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-    );
-    return pickedFile?.path;
+  Future<String?> attachImageFilePath({
+    ImageSource source = ImageSource.gallery,
+  }) async {
+    try {
+      final pickedFile = await ImagePicker().pickImage(
+        source: source,
+        imageQuality: 85,
+      );
+      return pickedFile?.path;
+    } catch (e) {
+      logError('Error picking image: $e');
+      return null;
+    }
   }
 
   Future<void> fetchChatBots() async {
@@ -67,42 +76,42 @@ class ChatBotListNotifier extends StateNotifier<List<ChatBot>> {
   Future<Map<String, List<num>>> batchEmbedChunks(
     List<String> textChunks,
   ) async {
-    final response = geminiRepository.batchEmbedChunks(textChunks: textChunks);
-
-    return response;
+    try {
+      final response =
+          await geminiRepository.batchEmbedChunks(textChunks: textChunks);
+      return response;
+    } catch (e) {
+      logError('Failed to generate embeddings: $e');
+      return {};
+    }
   }
 
   Future<List<String>> getChunksFromPDF(String filePath) async {
-    final List<String> pageTextChunks = [];
+    try {
+      final List<String> pageTextChunks = [];
+      final file = File(filePath);
+      if (!file.existsSync()) return [];
 
-    final PdfDocument document = PdfDocument(
-      inputBytes: await File(filePath).readAsBytes(),
-    );
+      final PdfDocument document = PdfDocument(
+        inputBytes: await file.readAsBytes(),
+      );
 
-    final PdfTextExtractor extractor = PdfTextExtractor(document);
+      final PdfTextExtractor extractor = PdfTextExtractor(document);
 
-    for (int pageIndex = 0; pageIndex < document.pages.count; pageIndex++) {
-      final List<TextLine> textLines =
-          extractor.extractTextLines(startPageIndex: pageIndex);
-      final int halfLineIndex = (textLines.length / 2).floor();
-      final StringBuffer firstHalfText = StringBuffer();
-      final StringBuffer secondHalfText = StringBuffer();
-
-      for (int lineIndex = 0; lineIndex < textLines.length; lineIndex++) {
-        if (lineIndex < halfLineIndex) {
-          firstHalfText.writeln(textLines[lineIndex].text);
-        } else {
-          secondHalfText.writeln(textLines[lineIndex].text);
+      for (int pageIndex = 0; pageIndex < document.pages.count; pageIndex++) {
+        final text = extractor.extractText(
+          startPageIndex: pageIndex,
+          endPageIndex: pageIndex,
+        );
+        final trimmed = text.trim();
+        if (trimmed.isNotEmpty) {
+          pageTextChunks.add(trimmed);
         }
       }
-
-      if (firstHalfText.isNotEmpty) {
-        pageTextChunks.add(firstHalfText.toString());
-      }
-      if (secondHalfText.isNotEmpty) {
-        pageTextChunks.add(secondHalfText.toString());
-      }
+      return pageTextChunks;
+    } catch (e) {
+      logError('Error extracting text from PDF: $e');
+      return [];
     }
-    return pageTextChunks;
   }
 }
