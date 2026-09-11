@@ -26,7 +26,7 @@ class ChatInterfaceWidget extends ConsumerWidget {
     return Chat(
       messages: messages,
       onSendPressed: (text) =>
-          ref.watch(messageListProvider.notifier).handleSendPressed(
+          ref.read(messageListProvider.notifier).handleSendPressed(
                 text: text.text,
                 imageFilePath: chatBot.attachmentPath,
               ),
