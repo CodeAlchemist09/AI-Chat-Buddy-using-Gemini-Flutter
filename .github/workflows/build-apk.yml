@@ -2,18 +2,7 @@ name: Build Flutter APK
 on:
   push:
     branches: [main, master]
-  workflow_dispatch: # Allows you to manually click "Run workflow"
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.2 # Fixed version
-      name: Build Flutter APK
-on:
-  push:
-    branches: [main, master]
-  workflow_dispatch: # Allows you to manually click "Run workflow" inside GitHub
+  workflow_dispatch:
 
 jobs:
   build:
@@ -24,11 +13,11 @@ jobs:
       - uses: actions/setup-java@v4.3.0
         with:
           distribution: 'temurin'
-          java-version: '17' # Upgraded to Java 17 for Flutter 3.x support
+          java-version: '17'
 
       - uses: subosito/flutter-action@v2.18.0
         with:
-          flutter-version: '3.13.0' # Set to Flutter 3.13 to satisfy your SDK constraints
+          flutter-version: '3.13.0'
           channel: 'stable'
 
       - run: flutter pub get
@@ -37,26 +26,6 @@ jobs:
         run: flutter build apk --release
 
       - uses: actions/upload-artifact@v4.6.1
-        with:
-          name: release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-
-      - uses: actions/setup-java@v4.3.0 # Fixed version (v5 is not stable for all environments yet)
-        with:
-          distribution: 'temurin'
-          java-version: '11' # Older apps often require Java 11 instead of 17
-
-      - uses: subosito/flutter-action@v2.18.0 # Fixed version
-        with:
-          flutter-version: '2.10.5' # Lowered from 3.x to match an app built "a few years ago"
-          channel: 'stable'
-
-      - run: flutter pub get
-      
-      - name: Build APK
-        run: flutter build apk --release
-
-      - uses: actions/upload-artifact@v4.6.1 # Fixed version
         with:
           name: release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
