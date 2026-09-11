@@ -26,7 +26,7 @@ class GeminiRepository extends BaseGeminiRepository {
   // Cached active model name to avoid repeated discovery calls
   static String? _resolvedModel;
 
-  // Active Free Tier models in Google AI Studio (as of September 2026)
+  // Active Free Tier multimodal Flash models in Google AI Studio (as of September 2026)
   static const List<String> defaultFreeTierModels = [
     'gemini-3.8-flash',
     'gemini-3.1-flash-lite',
@@ -36,7 +36,7 @@ class GeminiRepository extends BaseGeminiRepository {
   ];
 
   /// Dynamically queries Google AI Studio models.list endpoint to find active
-  /// Free Tier Flash models supporting generateContent for the user's API key.
+  /// Free Tier Multimodal Flash models (text, images, PDFs) for the user's API key.
   Future<List<String>> getAvailableFreeTierModels(String apiKey) async {
     try {
       final res = await dio.get<dynamic>(
@@ -65,18 +65,47 @@ class GeminiRepository extends BaseGeminiRepository {
               final isGenContent = methods is List &&
                   methods.any((m) => m.toString() == 'generateContent');
 
-              // Strictly Free Tier: must support generateContent, be a Flash model, and NOT Pro
-              if (isGenContent &&
-                  lower.contains('flash') &&
-                  !lower.contains('pro')) {
+              // Exclude specialized non-text or paid models:
+              // - tts / audio-only
+              // - live / realtime
+              // - embed / embedding
+              // - imagen
+              // - pro (requires paid billing)
+              final isSpecialized = lower.contains('tts') ||
+                  lower.contains('audio') ||
+                  lower.contains('embed') ||
+                  lower.contains('imagen') ||
+                  lower.contains('live') ||
+                  lower.contains('realtime') ||
+                  lower.contains('pro');
+
+              // Strictly Free Tier Multimodal Text Models
+              if (isGenContent && lower.contains('flash') && !isSpecialized) {
                 final cleanId = name.replaceFirst('models/', '');
                 freeTierModels.add(cleanId);
               }
             }
           }
+
           if (freeTierModels.isNotEmpty) {
+            // Sort by priority: prefer 3.8-flash, 3.1-flash-lite, 3-flash, 2.5-flash, 2.0-flash
+            freeTierModels.sort((a, b) {
+              int score(String id) {
+                final lowerId = id.toLowerCase();
+                if (lowerId.contains('3.8-flash')) return 100;
+                if (lowerId.contains('3.1-flash-lite')) return 90;
+                if (lowerId.contains('3-flash')) return 80;
+                if (lowerId.contains('2.5-flash')) return 70;
+                if (lowerId.contains('2.0-flash')) return 60;
+                if (lowerId.contains('flash')) return 50;
+                return 0;
+              }
+
+              return score(b).compareTo(score(a));
+            });
+
             logInfo(
-              'Discovered free-tier Flash models for this API key: $freeTierModels',
+              'Discovered free-tier multimodal Flash models for this API key: $freeTierModels',
             );
             return freeTierModels;
           }
@@ -215,17 +244,23 @@ class GeminiRepository extends BaseGeminiRepository {
       ],
     };
 
-    // Determine candidate models strictly from Free Tier Flash models
+    // Determine candidate models strictly from multimodal Free Tier Flash models
     final List<String> candidateModels = [];
 
-    if (model != null && model.isNotEmpty) {
+    if (model != null &&
+        model.isNotEmpty &&
+        !model.toLowerCase().contains('tts') &&
+        !model.toLowerCase().contains('audio')) {
       candidateModels.add(model.replaceFirst('models/', ''));
     }
-    if (_resolvedModel != null && _resolvedModel!.isNotEmpty) {
+    if (_resolvedModel != null &&
+        _resolvedModel!.isNotEmpty &&
+        !_resolvedModel!.toLowerCase().contains('tts') &&
+        !_resolvedModel!.toLowerCase().contains('audio')) {
       candidateModels.add(_resolvedModel!);
     }
 
-    // Fetch live free-tier models from Google API
+    // Fetch live free-tier multimodal models from Google API
     final liveFreeTier = await getAvailableFreeTierModels(apiKey);
     candidateModels.addAll(liveFreeTier);
     candidateModels.addAll(defaultFreeTierModels);
@@ -255,17 +290,22 @@ class GeminiRepository extends BaseGeminiRepository {
         break; // Successfully connected!
       } on DioException catch (dioErr) {
         lastDioException = dioErr;
-        if (dioErr.response?.statusCode == 404) {
-          logError('Model $candidate returned 404. Trying next candidate...');
+        if (dioErr.response?.statusCode == 404 ||
+            dioErr.response?.statusCode == 400) {
+          logError(
+            'Model $candidate returned ${dioErr.response?.statusCode}. Trying next candidate...',
+          );
           _resolvedModel = null;
           continue; // Try next candidate
         } else {
           final errorMsg = await _extractDioErrorMessage(dioErr);
           logError('DioException in streamContent: $errorMsg');
+          _resolvedModel = null;
           throw Exception(errorMsg);
         }
       } catch (e) {
         logError('Network error in streamContent: $e');
+        _resolvedModel = null;
         throw Exception('Connection failed: $e');
       }
     }
@@ -275,7 +315,9 @@ class GeminiRepository extends BaseGeminiRepository {
         final errorMsg = await _extractDioErrorMessage(lastDioException);
         throw Exception(errorMsg);
       }
-      throw Exception('Failed to connect to any Free Tier Gemini Flash model.');
+      throw Exception(
+        'Failed to connect to any Free Tier Gemini Multimodal Flash model.',
+      );
     }
 
     final ResponseBody rb = response.data!;
@@ -326,6 +368,7 @@ class GeminiRepository extends BaseGeminiRepository {
             final errorMap = decoded['error'] as Map<String, dynamic>?;
             final message = errorMap?['message']?.toString() ??
                 'Gemini API returned an error';
+            _resolvedModel = null;
             throw Exception(message);
           }
 
@@ -340,6 +383,7 @@ class GeminiRepository extends BaseGeminiRepository {
         }
       } catch (e) {
         if (e is Exception && e.toString().contains('Gemini API returned')) {
+          _resolvedModel = null;
           rethrow;
         }
         // Incomplete JSON chunk, buffer continues accumulating
@@ -383,7 +427,7 @@ class GeminiRepository extends BaseGeminiRepository {
     }
 
     if (dioErr.response?.statusCode == 400) {
-      return 'Invalid request or API key. Please verify your Gemini API key in Settings.';
+      return 'Invalid request or model modality unsupported. Please check model availability.';
     }
     if (dioErr.response?.statusCode == 403) {
       return 'Permission denied. Make sure your API key has access to the Gemini API.';
