@@ -35,15 +35,16 @@ class ChatPage extends ConsumerWidget {
             : 'Text';
 
     final List<types.Message> messages = chatBot.messagesList.map((msg) {
+      final createdAtStr = msg['createdAt']?.toString() ?? '';
+      final parsedDate = DateTime.tryParse(createdAtStr) ?? DateTime.now();
       return types.TextMessage(
-        author: types.User(id: msg['typeOfMessage'] as String),
-        createdAt:
-            DateTime.parse(msg['createdAt'] as String).millisecondsSinceEpoch,
-        id: msg['id'] as String,
-        text: msg['text'] as String,
+        author: types.User(id: (msg['typeOfMessage'] as String?) ?? TypeOfMessage.user),
+        createdAt: parsedDate.millisecondsSinceEpoch,
+        id: (msg['id'] as String?) ?? '',
+        text: (msg['text'] as String?) ?? '',
       );
     }).toList()
-      ..sort((a, b) => b.createdAt!.compareTo(a.createdAt!));
+      ..sort((a, b) => (b.createdAt ?? 0).compareTo(a.createdAt ?? 0));
 
     return PopScope(
       canPop: false,
