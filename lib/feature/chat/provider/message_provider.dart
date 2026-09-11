@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ai_buddy/core/config/type_of_bot.dart';
 import 'package:ai_buddy/core/config/type_of_message.dart';
@@ -7,7 +8,6 @@ import 'package:ai_buddy/feature/gemini/gemini.dart';
 import 'package:ai_buddy/feature/hive/model/chat_bot/chat_bot.dart';
 import 'package:ai_buddy/feature/hive/model/chat_message/chat_message.dart';
 import 'package:ai_buddy/feature/hive/repository/hive_repository.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
@@ -36,6 +36,28 @@ class MessageListNotifier extends StateNotifier<ChatBot> {
     );
   }
 
+  Future<void> _updateMessageText(String messageId, String newText) async {
+    final int messageIndex =
+        state.messagesList.indexWhere((msg) => msg['id'] == messageId);
+    if (messageIndex != -1) {
+      final newMessagesList =
+          List<Map<String, dynamic>>.from(state.messagesList);
+      newMessagesList[messageIndex] = Map<String, dynamic>.from(
+        newMessagesList[messageIndex],
+      );
+      newMessagesList[messageIndex]['text'] = newText;
+      final newState = ChatBot(
+        id: state.id,
+        title: state.title,
+        typeOfBot: state.typeOfBot,
+        messagesList: newMessagesList,
+        attachmentPath: state.attachmentPath,
+        embeddings: state.embeddings,
+      );
+      await updateChatBot(newState);
+    }
+  }
+
   Future<void> handleSendPressed({
     required String text,
     String? imageFilePath,
@@ -56,35 +78,100 @@ class MessageListNotifier extends StateNotifier<ChatBot> {
     required String prompt,
     String? imageFilePath,
   }) async {
-    final List<Parts> chatParts = state.messagesList.map((msg) {
-      return Parts(text: msg['text'] as String);
-    }).toList();
+    // Construct multi-turn contents from existing messages
+    final List<Map<String, dynamic>> contents = [];
 
-    if (state.typeOfBot == TypeOfBot.pdf) {
-      final embeddingPrompt = await geminiRepository.promptForEmbedding(
-        userPrompt: prompt,
-        embeddings: state.embeddings,
-      );
-      chatParts.add(Parts(text: embeddingPrompt));
-    } else {
-      chatParts.add(Parts(text: prompt));
+    for (final msg in state.messagesList) {
+      final msgText = msg['text'] as String? ?? '';
+      if (msgText.isEmpty ||
+          msgText == 'waiting for response...' ||
+          msgText.startsWith('Error:')) {
+        continue;
+      }
+
+      final isUser = msg['typeOfMessage'] == TypeOfMessage.user;
+      final role = isUser ? 'user' : 'model';
+
+      if (contents.isNotEmpty && contents.last['role'] == role) {
+        final existingParts =
+            (contents.last['parts'] as List).cast<Map<String, dynamic>>();
+        existingParts.add({'text': msgText});
+      } else {
+        contents.add({
+          'role': role,
+          'parts': [
+            {'text': msgText}
+          ],
+        });
+      }
     }
 
-    final content = Content(parts: chatParts);
+    // Ensure the latest user prompt is present
+    if (contents.isEmpty || contents.last['role'] != 'user') {
+      contents.add({
+        'role': 'user',
+        'parts': [
+          {'text': prompt}
+        ],
+      });
+    }
 
-    Stream<Candidates> responseStream;
-    ChatMessage placeholderMessage;
+    // Handle PDF bots
+    Uint8List? docBytes;
+    String? docMimeType;
+    if (state.typeOfBot == TypeOfBot.pdf && state.attachmentPath != null) {
+      final pdfFile = File(state.attachmentPath!);
+      if (pdfFile.existsSync()) {
+        try {
+          final fileLength = await pdfFile.length();
+          // Gemini inlineData supports up to ~20MB comfortably
+          if (fileLength < 20 * 1024 * 1024) {
+            docBytes = await pdfFile.readAsBytes();
+            docMimeType = 'application/pdf';
+          } else if (state.embeddings != null &&
+              state.embeddings!.isNotEmpty) {
+            // Fall back to embedding-based context for very large files
+            final contextPrompt = await geminiRepository.promptForEmbedding(
+              userPrompt: prompt,
+              embeddings: state.embeddings,
+            );
+            contents.last['parts'] = [
+              {'text': contextPrompt}
+            ];
+          }
+        } catch (e) {
+          logError('Error reading PDF attachment: $e');
+        }
+      }
+    }
 
-    if (imageFilePath != null && state.typeOfBot == TypeOfBot.image) {
-      final Uint8List imageBytes = File(imageFilePath).readAsBytesSync();
-      responseStream =
-          geminiRepository.streamContent(content: content, image: imageBytes);
-    } else {
-      responseStream = geminiRepository.streamContent(content: content);
+    // Handle Image bots
+    Uint8List? imgBytes;
+    String? imgMimeType;
+    final activeImagePath = imageFilePath ?? state.attachmentPath;
+    if (state.typeOfBot == TypeOfBot.image && activeImagePath != null) {
+      final imgFile = File(activeImagePath);
+      if (imgFile.existsSync()) {
+        try {
+          imgBytes = await imgFile.readAsBytes();
+          final pathLower = activeImagePath.toLowerCase();
+          if (pathLower.endsWith('.png')) {
+            imgMimeType = 'image/png';
+          } else if (pathLower.endsWith('.webp')) {
+            imgMimeType = 'image/webp';
+          } else if (pathLower.endsWith('.heic')) {
+            imgMimeType = 'image/heic';
+          } else {
+            imgMimeType = 'image/jpeg';
+          }
+        } catch (e) {
+          logError('Error reading image attachment: $e');
+        }
+      }
     }
 
     final String modelMessageId = uuid.v4();
-    placeholderMessage = ChatMessage(
+    final placeholderMessage = ChatMessage(
       id: modelMessageId,
       text: 'waiting for response...',
       createdAt: DateTime.now(),
@@ -95,31 +182,58 @@ class MessageListNotifier extends StateNotifier<ChatBot> {
     await updateChatBotWithMessage(placeholderMessage);
 
     final StringBuffer fullResponseText = StringBuffer();
+    bool hasReceivedAnyChunk = false;
 
-    responseStream.listen((response) async {
-      if (response.content!.parts!.isNotEmpty) {
-        fullResponseText.write(response.content!.parts!.first.text);
-        final int messageIndex =
-            state.messagesList.indexWhere((msg) => msg['id'] == modelMessageId);
-        if (messageIndex != -1) {
-          final newMessagesList =
-              List<Map<String, dynamic>>.from(state.messagesList);
-          newMessagesList[messageIndex]['text'] = fullResponseText.toString();
-          final newState = ChatBot(
-            id: state.id,
-            title: state.title,
-            typeOfBot: state.typeOfBot,
-            messagesList: newMessagesList,
-            attachmentPath: state.attachmentPath,
-            embeddings: state.embeddings,
-          );
-          await updateChatBot(newState);
-        }
-      }
-      // ignore: inference_failure_on_untyped_parameter
-    }).onError((error) {
-      logError('Error in response stream $error');
-    });
+    try {
+      final responseStream = geminiRepository.streamContent(
+        contents: contents,
+        image: imgBytes,
+        imageMimeType: imgMimeType,
+        document: docBytes,
+        documentMimeType: docMimeType,
+      );
+
+      responseStream.listen(
+        (response) async {
+          if (response.content?.parts != null &&
+              response.content!.parts!.isNotEmpty) {
+            final chunkText = response.content!.parts!.first.text ?? '';
+            if (chunkText.isNotEmpty) {
+              hasReceivedAnyChunk = true;
+              fullResponseText.write(chunkText);
+              await _updateMessageText(
+                modelMessageId,
+                fullResponseText.toString(),
+              );
+            }
+          }
+        },
+        onError: (error) async {
+          logError('Error in response stream: $error');
+          final cleanMsg = error
+              .toString()
+              .replaceFirst('Exception: ', '')
+              .trim();
+          final displayError = hasReceivedAnyChunk
+              ? '${fullResponseText.toString()}\n\n[Interrupted: $cleanMsg]'
+              : 'Error: $cleanMsg';
+          await _updateMessageText(modelMessageId, displayError);
+        },
+        onDone: () async {
+          if (!hasReceivedAnyChunk && fullResponseText.isEmpty) {
+            await _updateMessageText(
+              modelMessageId,
+              'Error: No response received from Gemini.',
+            );
+          }
+        },
+        cancelOnError: true,
+      );
+    } catch (e) {
+      logError('Immediate error invoking Gemini: $e');
+      final cleanMsg = e.toString().replaceFirst('Exception: ', '').trim();
+      await _updateMessageText(modelMessageId, 'Error: $cleanMsg');
+    }
   }
 
   Future<void> updateChatBot(ChatBot newChatBot) async {
