@@ -23,68 +23,75 @@ class GeminiRepository extends BaseGeminiRepository {
   static const baseUrl =
       'https://generativelanguage.googleapis.com/v1beta/models';
 
-  // Cached active model name to prevent 404s
+  // Cached active model name to avoid repeated discovery calls
   static String? _resolvedModel;
 
-  /// Dynamically queries the Google Generative Language API to find an active
-  /// model supporting generateContent for the given API key.
-  Future<String> resolveActiveModel(String apiKey) async {
-    if (_resolvedModel != null) return _resolvedModel!;
+  // Active Free Tier models in Google AI Studio (as of September 2026)
+  static const List<String> defaultFreeTierModels = [
+    'gemini-3.8-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-3-flash-preview',
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+  ];
 
+  /// Dynamically queries Google AI Studio models.list endpoint to find active
+  /// Free Tier Flash models supporting generateContent for the user's API key.
+  Future<List<String>> getAvailableFreeTierModels(String apiKey) async {
     try {
-      final res = await dio.get<Map<String, dynamic>>(
+      final res = await dio.get<dynamic>(
         'https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey',
         options: Options(
-          responseType: ResponseType.json,
           headers: {'Content-Type': 'application/json'},
         ),
       );
-      final modelsList = res.data?['models'] as List?;
-      if (modelsList != null && modelsList.isNotEmpty) {
-        // Look for modern Flash models first
-        for (final m in modelsList) {
-          if (m is Map) {
-            final name = m['name']?.toString() ?? '';
-            final methods = (m['supportedGenerationMethods'] as List?)
-                    ?.map((e) => e.toString())
-                    .toList() ??
-                [];
-            if (methods.contains('generateContent') &&
-                name.toLowerCase().contains('flash')) {
-              _resolvedModel = name.replaceFirst('models/', '');
-              logInfo('Resolved active Gemini Flash model: $_resolvedModel');
-              return _resolvedModel!;
+
+      dynamic data = res.data;
+      if (data is String) {
+        try {
+          data = jsonDecode(data);
+        } catch (_) {}
+      }
+
+      if (data is Map) {
+        final rawList = data['models'];
+        if (rawList is List && rawList.isNotEmpty) {
+          final List<String> freeTierModels = [];
+          for (final item in rawList) {
+            if (item is Map) {
+              final name = item['name']?.toString() ?? '';
+              final lower = name.toLowerCase();
+              final methods = item['supportedGenerationMethods'];
+              final isGenContent = methods is List &&
+                  methods.any((m) => m.toString() == 'generateContent');
+
+              // Strictly Free Tier: must support generateContent, be a Flash model, and NOT Pro
+              if (isGenContent &&
+                  lower.contains('flash') &&
+                  !lower.contains('pro')) {
+                final cleanId = name.replaceFirst('models/', '');
+                freeTierModels.add(cleanId);
+              }
             }
           }
-        }
-        // Fallback: any model supporting generateContent
-        for (final m in modelsList) {
-          if (m is Map) {
-            final name = m['name']?.toString() ?? '';
-            final methods = (m['supportedGenerationMethods'] as List?)
-                    ?.map((e) => e.toString())
-                    .toList() ??
-                [];
-            if (methods.contains('generateContent')) {
-              _resolvedModel = name.replaceFirst('models/', '');
-              logInfo('Resolved active Gemini model: $_resolvedModel');
-              return _resolvedModel!;
-            }
+          if (freeTierModels.isNotEmpty) {
+            logInfo(
+              'Discovered free-tier Flash models for this API key: $freeTierModels',
+            );
+            return freeTierModels;
           }
         }
       }
     } catch (e) {
-      logError('Could not dynamically list models: $e');
+      logError('Could not dynamically list free-tier models: $e');
     }
 
-    // Default to gemini-2.0-flash if model list is unreachable
-    _resolvedModel = 'gemini-2.0-flash';
-    return _resolvedModel!;
+    return defaultFreeTierModels;
   }
 
   /// Streams content from the Gemini API using Server-Sent Events (SSE)
   /// or robust JSON chunk parsing. Supports multi-turn conversations,
-  /// images, and PDF documents.
+  /// images, and PDF documents exclusively with Free Tier Flash models.
   @override
   Stream<Candidates> streamContent({
     Content? content,
@@ -103,7 +110,6 @@ class GeminiRepository extends BaseGeminiRepository {
     }
 
     final apiKey = geminiAPIKey.trim();
-    String targetModel = model ?? await resolveActiveModel(apiKey);
 
     // Build the contents list
     final List<Map<String, dynamic>> apiContents = [];
@@ -209,20 +215,27 @@ class GeminiRepository extends BaseGeminiRepository {
       ],
     };
 
+    // Determine candidate models strictly from Free Tier Flash models
+    final List<String> candidateModels = [];
+
+    if (model != null && model.isNotEmpty) {
+      candidateModels.add(model.replaceFirst('models/', ''));
+    }
+    if (_resolvedModel != null && _resolvedModel!.isNotEmpty) {
+      candidateModels.add(_resolvedModel!);
+    }
+
+    // Fetch live free-tier models from Google API
+    final liveFreeTier = await getAvailableFreeTierModels(apiKey);
+    candidateModels.addAll(liveFreeTier);
+    candidateModels.addAll(defaultFreeTierModels);
+
     Response<ResponseBody>? response;
-
-    // List of model fallbacks in case targetModel returns 404
-    final candidateModels = [
-      targetModel,
-      'gemini-2.0-flash',
-      'gemini-2.5-flash',
-      'gemini-1.5-flash-latest',
-      'gemini-pro',
-    ];
-
     DioException? lastDioException;
 
-    for (final candidate in candidateModels.toSet()) {
+    final uniqueCandidates = candidateModels.toSet().toList();
+
+    for (final candidate in uniqueCandidates) {
       final url =
           '$baseUrl/$candidate:streamGenerateContent?alt=sse&key=$apiKey';
       try {
@@ -238,15 +251,15 @@ class GeminiRepository extends BaseGeminiRepository {
           data: jsonEncode(requestPayload),
         );
         _resolvedModel = candidate;
+        logInfo('Connected successfully using Free Tier model: $candidate');
         break; // Successfully connected!
       } on DioException catch (dioErr) {
         lastDioException = dioErr;
         if (dioErr.response?.statusCode == 404) {
           logError('Model $candidate returned 404. Trying next candidate...');
           _resolvedModel = null;
-          continue; // try next candidate model
+          continue; // Try next candidate
         } else {
-          // Other error (400, 403, 429), rethrow immediately
           final errorMsg = await _extractDioErrorMessage(dioErr);
           logError('DioException in streamContent: $errorMsg');
           throw Exception(errorMsg);
@@ -262,7 +275,7 @@ class GeminiRepository extends BaseGeminiRepository {
         final errorMsg = await _extractDioErrorMessage(lastDioException);
         throw Exception(errorMsg);
       }
-      throw Exception('Failed to connect to Gemini API.');
+      throw Exception('Failed to connect to any Free Tier Gemini Flash model.');
     }
 
     final ResponseBody rb = response.data!;
@@ -306,7 +319,7 @@ class GeminiRepository extends BaseGeminiRepository {
 
       try {
         final decoded = jsonDecode(candidateJson);
-        buffer = ''; // successfully decoded full JSON object
+        buffer = ''; // Successfully decoded full JSON object
 
         if (decoded is Map<String, dynamic>) {
           if (decoded.containsKey('error')) {
@@ -376,10 +389,10 @@ class GeminiRepository extends BaseGeminiRepository {
       return 'Permission denied. Make sure your API key has access to the Gemini API.';
     }
     if (dioErr.response?.statusCode == 404) {
-      return 'Model not found. Please check model availability for your API key.';
+      return 'Free Tier model not found. Retrying with next available model...';
     }
     if (dioErr.response?.statusCode == 429) {
-      return 'Gemini API quota exceeded. Please wait a moment or check your billing plan.';
+      return 'Gemini API free tier rate limit reached. Please wait a moment and try again.';
     }
 
     return dioErr.message ?? 'Network error occurred.';
