@@ -255,54 +255,52 @@ class _HomePageState extends ConsumerState<HomePage> {
                                 imagePath: AssetConstants.pdfLogo,
                                 isMainButton: true,
                                 onPressed: () async {
-                                  final result =
-                                      await FilePicker.platform.pickFiles(
-                                    type: FileType.custom,
-                                    allowedExtensions: ['pdf'],
-                                  );
-                                  if (result != null) {
-                                    final filePath = result.files.single.path;
-                                    setState(() {
-                                      _isBuildingChatBot = true;
-                                      currentState = 'Extracting data';
-                                    });
-
-                                    await Future<void>.delayed(
-                                      const Duration(milliseconds: 100),
+                                  try {
+                                    final result =
+                                        await FilePicker.platform.pickFiles(
+                                      type: FileType.custom,
+                                      allowedExtensions: ['pdf'],
                                     );
+                                    if (result != null &&
+                                        result.files.single.path != null) {
+                                      final filePath =
+                                          result.files.single.path!;
+                                      setState(() {
+                                        _isBuildingChatBot = true;
+                                        currentState = 'Opening document...';
+                                      });
 
-                                    final textChunks = await ref
-                                        .read(chatBotListProvider.notifier)
-                                        .getChunksFromPDF(filePath!);
+                                      final chatBot = ChatBot(
+                                        messagesList: [],
+                                        id: uuid.v4(),
+                                        title: '',
+                                        typeOfBot: TypeOfBot.pdf,
+                                        attachmentPath: filePath,
+                                      );
 
-                                    setState(() {
-                                      currentState = 'Building chatBot';
-                                    });
+                                      await ref
+                                          .read(chatBotListProvider.notifier)
+                                          .saveChatBot(chatBot);
+                                      await ref
+                                          .read(messageListProvider.notifier)
+                                          .updateChatBot(chatBot);
 
-                                    final embeddingsMap = await ref
-                                        .read(chatBotListProvider.notifier)
-                                        .batchEmbedChunks(textChunks);
-
-                                    final chatBot = ChatBot(
-                                      messagesList: [],
-                                      id: uuid.v4(),
-                                      title: '',
-                                      typeOfBot: TypeOfBot.pdf,
-                                      attachmentPath: filePath,
-                                      embeddings: embeddingsMap,
-                                    );
-
-                                    await ref
-                                        .read(chatBotListProvider.notifier)
-                                        .saveChatBot(chatBot);
-                                    await ref
-                                        .read(messageListProvider.notifier)
-                                        .updateChatBot(chatBot);
-
-                                    AppRoute.chat.push(context);
+                                      setState(() {
+                                        _isBuildingChatBot = false;
+                                      });
+                                      AppRoute.chat.push(context);
+                                    }
+                                  } catch (e) {
                                     setState(() {
                                       _isBuildingChatBot = false;
                                     });
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text('Failed to load PDF: $e'),
+                                        ),
+                                      );
+                                    }
                                   }
                                 },
                               ),
@@ -339,9 +337,57 @@ class _HomePageState extends ConsumerState<HomePage> {
                                     imagePath: AssetConstants.imageLogo,
                                     isMainButton: false,
                                     onPressed: () async {
+                                      final source =
+                                          await showModalBottomSheet<
+                                              ImageSource>(
+                                        context: context,
+                                        shape: const RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.vertical(
+                                            top: Radius.circular(20),
+                                          ),
+                                        ),
+                                        builder: (ctx) => SafeArea(
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 16,
+                                              horizontal: 8,
+                                            ),
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                ListTile(
+                                                  leading: const Icon(
+                                                    Icons.photo_library,
+                                                  ),
+                                                  title: const Text(
+                                                    'Choose from Gallery',
+                                                  ),
+                                                  onTap: () => Navigator.pop(
+                                                    ctx,
+                                                    ImageSource.gallery,
+                                                  ),
+                                                ),
+                                                ListTile(
+                                                  leading: const Icon(
+                                                    Icons.camera_alt,
+                                                  ),
+                                                  title: const Text(
+                                                    'Take a Photo',
+                                                  ),
+                                                  onTap: () => Navigator.pop(
+                                                    ctx,
+                                                    ImageSource.camera,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                      if (source == null) return;
                                       final pickedFile = await ref
                                           .read(chatBotListProvider.notifier)
-                                          .attachImageFilePath();
+                                          .attachImageFilePath(source: source);
                                       if (pickedFile != null) {
                                         final chatBot = ChatBot(
                                           messagesList: [],
@@ -356,7 +402,9 @@ class _HomePageState extends ConsumerState<HomePage> {
                                         await ref
                                             .read(messageListProvider.notifier)
                                             .updateChatBot(chatBot);
-                                        AppRoute.chat.push(context);
+                                        if (mounted) {
+                                          AppRoute.chat.push(context);
+                                        }
                                       }
                                     },
                                   ),
