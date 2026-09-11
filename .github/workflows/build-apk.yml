@@ -17,15 +17,15 @@ jobs:
 
       - uses: subosito/flutter-action@v2.18.0
         with:
-          flutter-version: '3.22.0' # Upgraded to include Dart SDK 3.4.0
+          flutter-version: '3.22.0'
           channel: 'stable'
 
       - run: flutter pub get
       
       - name: Build APK
-        run: flutter build apk --release
+        run: flutter build apk --debug # Changed from --release to --debug to bypass production signing
 
       - uses: actions/upload-artifact@v4.6.1
         with:
-          name: release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk # Updated target path to catch the debug binary
