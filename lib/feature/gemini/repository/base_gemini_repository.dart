@@ -3,8 +3,13 @@ import 'package:ai_buddy/feature/gemini/gemini.dart';
 
 abstract class BaseGeminiRepository {
   Stream<Candidates> streamContent({
-    required Content content,
+    Content? content,
+    List<Map<String, dynamic>>? contents,
     Uint8List? image,
+    String? imageMimeType,
+    Uint8List? document,
+    String? documentMimeType,
+    String? model,
   });
 
   Future<String> promptForEmbedding({

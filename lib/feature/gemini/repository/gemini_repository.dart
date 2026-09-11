@@ -13,148 +13,292 @@ import 'package:dio/dio.dart';
 class GeminiRepository extends BaseGeminiRepository {
   GeminiRepository();
 
-  final dio = Dio();
-  final splitter = const LineSplitter();
+  final dio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 60),
+    ),
+  );
+
   static const baseUrl =
       'https://generativelanguage.googleapis.com/v1beta/models';
+  static const defaultModel = 'gemini-1.5-flash';
 
-  /// Streams content from the Gemini API based on the provided content
-  /// and optional image.
-  /// This method is used to generate content dynamically, potentially
-  /// including image analysis.
+  /// Streams content from the Gemini API using Server-Sent Events (SSE)
+  /// or robust JSON chunk parsing. Supports multi-turn conversations,
+  /// images, and PDF documents.
   @override
   Stream<Candidates> streamContent({
-    required Content content,
+    Content? content,
+    List<Map<String, dynamic>>? contents,
     Uint8List? image,
+    String? imageMimeType,
+    Uint8List? document,
+    String? documentMimeType,
+    String? model,
   }) async* {
-    try {
-      final geminiAPIKey = await SecureStorage().getApiKey();
-      Object? mapData = {};
-      const model = 'gemini-1.5-flash';
-      if (image == null) {
-        mapData = {
-          'contents': [
-            {
-              'parts': content.parts
-                      ?.map(
-                        (part) => {'text': part.text},
-                      )
-                      .toList() ??
-                  [],
-            },
-          ],
-          'safetySettings': [
-            {
-              'category': 'HARM_CATEGORY_DANGEROUS_CONTENT',
-              'threshold': 'BLOCK_ONLY_HIGH',
-            },
-          ],
-        };
-      } else {
-        final text = content.parts?.last.text;
-        mapData = {
-          'contents': [
-            {
-              'parts': [
-                {'text': text},
-                {
-                  'inline_data': {
-                    'mime_type': 'image/jpeg',
-                    'data': base64Encode(image),
-                  },
-                },
-              ],
-            }
-          ],
-          'safetySettings': [
-            {
-              'category': 'HARM_CATEGORY_DANGEROUS_CONTENT',
-              'threshold': 'BLOCK_ONLY_HIGH',
-            },
-          ],
-        };
-      }
-      final response = await dio.post(
-        '$baseUrl/$model:streamGenerateContent?key=$geminiAPIKey',
-        options: Options(
-          headers: {'Content-Type': 'application/json'},
-          responseType: ResponseType.stream,
-        ),
-        data: jsonEncode(mapData),
+    final geminiAPIKey = await SecureStorage().getApiKey();
+    if (geminiAPIKey == null || geminiAPIKey.trim().isEmpty) {
+      throw Exception(
+        'Gemini API key is not set. Please add your API key in Settings.',
       );
+    }
 
-      if (response.statusCode == 200) {
-        final ResponseBody rb = response.data as ResponseBody;
-        int index = 0;
-        String modelStr = '';
-        List<int> cacheUnits = [];
-        List<int> list = [];
+    final targetModel = model ?? defaultModel;
 
-        await for (final itemList in rb.stream) {
-          list = cacheUnits + itemList;
+    // Build the contents list
+    final List<Map<String, dynamic>> apiContents = [];
 
-          cacheUnits.clear();
-
-          String res = '';
-          try {
-            res = utf8.decode(list);
-          } catch (e) {
-            cacheUnits = list;
-            continue;
+    if (contents != null && contents.isNotEmpty) {
+      for (final item in contents) {
+        apiContents.add(Map<String, dynamic>.from(item));
+      }
+    } else if (content != null) {
+      final partsList = <Map<String, dynamic>>[];
+      if (content.parts != null) {
+        for (final p in content.parts!) {
+          if (p.text != null && p.text!.isNotEmpty) {
+            partsList.add({'text': p.text});
           }
-
-          res = res.trim();
-
-          if (index == 0 && res.startsWith('[')) {
-            res = res.replaceFirst('[', '');
-          }
-          if (res.startsWith(',')) {
-            res = res.replaceFirst(',', '');
-          }
-          if (res.endsWith(']')) {
-            res = res.substring(0, res.length - 1);
-          }
-
-          res = res.trim();
-
-          for (final line in splitter.convert(res)) {
-            if (modelStr == '' && line == ',') {
-              continue;
-            }
-            // ignore: use_string_buffers
-            modelStr += line;
-            try {
-              final candidate = Candidates.fromJson(
-                (jsonDecode(modelStr)['candidates'] as List?)!.firstOrNull
-                    as Map<String, dynamic>,
-              );
-              yield candidate;
-              modelStr = '';
-            } catch (e) {
-              continue;
-            }
-          }
-          index++;
         }
       }
+      apiContents.add({
+        'role': content.role ?? 'user',
+        'parts': partsList,
+      });
+    }
+
+    // Ensure there is at least one message
+    if (apiContents.isEmpty) {
+      apiContents.add({
+        'role': 'user',
+        'parts': [{'text': 'Hello'}],
+      });
+    }
+
+    // Attach document (e.g. PDF) if provided
+    if (document != null && document.isNotEmpty) {
+      final docPart = {
+        'inlineData': {
+          'mimeType': documentMimeType ?? 'application/pdf',
+          'data': base64Encode(document),
+        },
+      };
+
+      // Add to the first or latest user message parts
+      final userIndex = apiContents.lastIndexWhere((c) => c['role'] == 'user');
+      if (userIndex != -1) {
+        final existingParts = ((apiContents[userIndex]['parts'] as List?) ?? [])
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+        apiContents[userIndex]['parts'] = [docPart, ...existingParts];
+      } else {
+        apiContents.insert(0, {
+          'role': 'user',
+          'parts': [docPart],
+        });
+      }
+    }
+
+    // Attach image if provided
+    if (image != null && image.isNotEmpty) {
+      final imagePart = {
+        'inlineData': {
+          'mimeType': imageMimeType ?? 'image/jpeg',
+          'data': base64Encode(image),
+        },
+      };
+
+      final userIndex = apiContents.lastIndexWhere((c) => c['role'] == 'user');
+      if (userIndex != -1) {
+        final existingParts = ((apiContents[userIndex]['parts'] as List?) ?? [])
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+        apiContents[userIndex]['parts'] = [...existingParts, imagePart];
+      } else {
+        apiContents.add({
+          'role': 'user',
+          'parts': [imagePart],
+        });
+      }
+    }
+
+    final Map<String, dynamic> requestPayload = {
+      'contents': apiContents,
+      'generationConfig': {
+        'temperature': 0.7,
+        'maxOutputTokens': 2048,
+      },
+      'safetySettings': [
+        {
+          'category': 'HARM_CATEGORY_DANGEROUS_CONTENT',
+          'threshold': 'BLOCK_ONLY_HIGH',
+        },
+        {
+          'category': 'HARM_CATEGORY_HARASSMENT',
+          'threshold': 'BLOCK_ONLY_HIGH',
+        },
+        {
+          'category': 'HARM_CATEGORY_HATE_SPEECH',
+          'threshold': 'BLOCK_ONLY_HIGH',
+        },
+        {
+          'category': 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+          'threshold': 'BLOCK_ONLY_HIGH',
+        },
+      ],
+    };
+
+    final apiKey = geminiAPIKey.trim();
+    final url = '$baseUrl/$targetModel:streamGenerateContent?alt=sse&key=$apiKey';
+
+    Response<ResponseBody> response;
+    try {
+      response = await dio.post<ResponseBody>(
+        url,
+        options: Options(
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+          },
+          responseType: ResponseType.stream,
+        ),
+        data: jsonEncode(requestPayload),
+      );
+    } on DioException catch (dioErr) {
+      final errorMsg = _extractDioErrorMessage(dioErr);
+      logError('DioException in streamContent: $errorMsg');
+      throw Exception(errorMsg);
     } catch (e) {
-      logError('Error in streamContent: $e');
-      rethrow;
+      logError('Network error in streamContent: $e');
+      throw Exception('Connection failed: $e');
+    }
+
+    if (response.statusCode != 200) {
+      throw Exception('Gemini API returned HTTP status ${response.statusCode}');
+    }
+
+    final ResponseBody rb = response.data!;
+    final stream = rb.stream
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .transform(const LineSplitter());
+
+    String buffer = '';
+
+    await for (final line in stream) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty || trimmed.startsWith(':')) {
+        continue;
+      }
+
+      String chunk = trimmed;
+      if (chunk.startsWith('data:')) {
+        chunk = chunk.substring(5).trim();
+      }
+
+      if (chunk == '[DONE]') {
+        break;
+      }
+
+      // If streaming as JSON array, clean array brackets
+      if (buffer.isEmpty) {
+        if (chunk.startsWith('[')) chunk = chunk.substring(1).trim();
+        if (chunk.startsWith(',')) chunk = chunk.substring(1).trim();
+      }
+
+      if (chunk.isEmpty) continue;
+
+      buffer = buffer.isEmpty ? chunk : '$buffer\n$chunk';
+
+      String candidateJson = buffer.trim();
+      if (candidateJson.endsWith(']')) {
+        candidateJson = candidateJson.substring(0, candidateJson.length - 1).trim();
+      }
+
+      try {
+        final decoded = jsonDecode(candidateJson);
+        buffer = ''; // successfully decoded full JSON object
+
+        if (decoded is Map<String, dynamic>) {
+          if (decoded.containsKey('error')) {
+            final errorMap = decoded['error'] as Map<String, dynamic>?;
+            final message = errorMap?['message']?.toString() ?? 'Gemini API returned an error';
+            throw Exception(message);
+          }
+
+          final candidatesList = decoded['candidates'] as List?;
+          if (candidatesList != null && candidatesList.isNotEmpty) {
+            final firstCandidate = candidatesList.first;
+            if (firstCandidate is Map<String, dynamic>) {
+              final candidate = Candidates.fromJson(firstCandidate);
+              yield candidate;
+            }
+          }
+        }
+      } catch (e) {
+        if (e is Exception && e.toString().contains('Gemini API returned')) {
+          rethrow;
+        }
+        // Incomplete JSON chunk, buffer continues accumulating
+      }
     }
   }
 
-  /// Processes a batch of text chunks to generate embeddings,
-  /// which are then returned in a map.
-  /// This method is useful for pre-processing text data for
-  /// further analysis or comparison.
+  /// Extracts user-friendly error message from DioException
+  String _extractDioErrorMessage(DioException dioErr) {
+    if (dioErr.response?.data != null) {
+      try {
+        final data = dioErr.response!.data;
+        if (data is Map && data.containsKey('error')) {
+          return data['error']['message']?.toString() ?? 'API error (${dioErr.response?.statusCode})';
+        }
+        if (data is ResponseBody) {
+          // ResponseBody cannot be read directly here; status code is available
+          return 'Gemini error (HTTP ${dioErr.response?.statusCode}): Check API key or model availability.';
+        }
+        if (data is String) {
+          final decoded = jsonDecode(data);
+          if (decoded is Map && decoded.containsKey('error')) {
+            return decoded['error']['message']?.toString() ?? data;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (dioErr.type == DioExceptionType.connectionTimeout ||
+        dioErr.type == DioExceptionType.receiveTimeout) {
+      return 'Connection timed out. Please check your internet connection.';
+    }
+
+    if (dioErr.response?.statusCode == 400) {
+      return 'Invalid request or API key. Please verify your Gemini API key in Settings.';
+    }
+    if (dioErr.response?.statusCode == 403) {
+      return 'Permission denied. Make sure your API key has access to the Gemini API.';
+    }
+    if (dioErr.response?.statusCode == 404) {
+      return 'Model not found or currently unavailable.';
+    }
+    if (dioErr.response?.statusCode == 429) {
+      return 'Gemini API quota exceeded. Please wait a moment or check your billing plan.';
+    }
+
+    return dioErr.message ?? 'Network error occurred.';
+  }
+
+  /// Processes a batch of text chunks to generate embeddings (kept for legacy support).
   @override
   Future<Map<String, List<num>>> batchEmbedChunks({
     required List<String> textChunks,
   }) async {
     try {
       final geminiAPIKey = await SecureStorage().getApiKey();
+      if (geminiAPIKey == null || geminiAPIKey.trim().isEmpty) {
+        throw Exception('Gemini API key is not set.');
+      }
       final Map<String, List<num>> embeddingsMap = {};
-      const int chunkSize = 100;
+      const int chunkSize = 50;
 
       for (int i = 0; i < textChunks.length; i += chunkSize) {
         final chunkEnd = (i + chunkSize < textChunks.length)
@@ -162,7 +306,7 @@ class GeminiRepository extends BaseGeminiRepository {
             : textChunks.length;
         final List<String> currentChunk = textChunks.sublist(i, chunkEnd);
         final response = await dio.post(
-          '$baseUrl/text-embedding-004:batchEmbedContents?key=$geminiAPIKey',
+          '$baseUrl/text-embedding-004:batchEmbedContents?key=${geminiAPIKey.trim()}',
           options: Options(headers: {'Content-Type': 'application/json'}),
           data: {
             'requests': currentChunk
@@ -180,11 +324,14 @@ class GeminiRepository extends BaseGeminiRepository {
                 .toList(),
           },
         );
-        final results = response.data['embeddings'];
-
-        for (var j = 0; j < currentChunk.length; j++) {
-          embeddingsMap[currentChunk[j]] =
-              (results![j]['values'] as List).cast<num>();
+        final results = response.data['embeddings'] as List?;
+        if (results != null) {
+          for (var j = 0; j < currentChunk.length; j++) {
+            if (j < results.length && results[j]['values'] != null) {
+              embeddingsMap[currentChunk[j]] =
+                  (results[j]['values'] as List).cast<num>();
+            }
+          }
         }
       }
       return embeddingsMap;
@@ -195,9 +342,7 @@ class GeminiRepository extends BaseGeminiRepository {
   }
 
   /// Generates a prompt for embedding based on the user's input and
-  /// the pre-calculated embeddings.
-  /// This method is designed to facilitate user interaction by
-  /// providing contextually relevant prompts.
+  /// the pre-calculated embeddings (legacy RAG fallback).
   @override
   Future<String> promptForEmbedding({
     required String userPrompt,
@@ -205,8 +350,11 @@ class GeminiRepository extends BaseGeminiRepository {
   }) async {
     try {
       final geminiAPIKey = await SecureStorage().getApiKey();
+      if (geminiAPIKey == null || geminiAPIKey.trim().isEmpty) {
+        return userPrompt;
+      }
       final response = await dio.post(
-        '$baseUrl/text-embedding-004:embedContent?key=$geminiAPIKey',
+        '$baseUrl/text-embedding-004:embedContent?key=${geminiAPIKey.trim()}',
         options: Options(headers: {'Content-Type': 'application/json'}),
         data: jsonEncode({
           'model': 'models/text-embedding-004',
@@ -220,18 +368,22 @@ class GeminiRepository extends BaseGeminiRepository {
       );
       final currentEmbedding =
           (response.data['embedding']['values'] as List).cast<num>();
-      if (embeddings == null) {
-        return 'Error: Embedding calculation failed or no embeddings in state.';
+      if (embeddings == null || embeddings.isEmpty) {
+        return userPrompt;
       }
 
       final Map<String, double> distances = {};
       embeddings.forEach((key, value) {
-        final double distance = calculateEuclideanDistance(
-          vectorA: currentEmbedding,
-          vectorB: value,
-        );
-        distances[key] = distance;
+        if (value.length == currentEmbedding.length) {
+          final double distance = calculateEuclideanDistance(
+            vectorA: currentEmbedding,
+            vectorB: value,
+          );
+          distances[key] = distance;
+        }
       });
+
+      if (distances.isEmpty) return userPrompt;
 
       final List<MapEntry<String, double>> sortedDistances = distances.entries
           .toList()
@@ -245,36 +397,20 @@ class GeminiRepository extends BaseGeminiRepository {
         }
       }
 
-      final prompt = '''
-You're a chat with pdf ai assistance.
+      return '''You are a helpful AI assistant for the attached document.
+Use the following relevant context to answer the user's question accurately:
 
-I've providing you with the most relevant text from pdf attached by user and your job is to read the following text delimited by delimiter #### carefully word by word and answer the prompt requested by user.
-
-Prompt will be initialised by the word "Prompt".
-
-####
+Context:
 $mergedText
-####
 
-Prompt: $userPrompt
-
-Give answer in a friendly tone with being crisp and precise in your answer. DONOT use any buzzwords, make sure your language is simple and easy to understand. 
-
-If user asks something unrelated to the pdf or book, simply reply with your overall sense.
-
-If you don't know the answer, just say "I don't know" or "I'm not sure".
-''';
-      return prompt;
+Question: $userPrompt''';
     } catch (e) {
       logError('Error in prompt generation: $e');
-      return 'An error occurred, please try again.';
+      return userPrompt;
     }
   }
 
-  /// Calculates the Euclidean distance between two vectors,
-  /// providing a measure of similarity.
-  /// This method is essential for operations like finding
-  /// the closest embeddings.
+  /// Calculates the Euclidean distance between two vectors.
   @override
   double calculateEuclideanDistance({
     required List<num> vectorA,
