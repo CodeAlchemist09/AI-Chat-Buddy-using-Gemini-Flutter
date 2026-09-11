@@ -56,7 +56,7 @@ class _APIKeyBottomSheetState extends State<APIKeyBottomSheet> {
                     return;
                   }
                   context.closeKeyboard();
-                  final apiKey = widget.apiKeyController.text;
+                  final apiKey = widget.apiKeyController.text.trim();
 
                   setState(() {
                     _isLoading = true;
@@ -93,11 +93,11 @@ class _APIKeyBottomSheetState extends State<APIKeyBottomSheet> {
               InkWell(
                 onTap: () => launchUrl(
                   Uri.parse(
-                    'https://makersuite.google.com/app/apikey',
+                    'https://aistudio.google.com/app/apikey',
                   ),
                 ),
                 child: Text(
-                  'Get your Gemini API key from here',
+                  'Get your Gemini API key from Google AI Studio',
                   style: context.textTheme.labelMedium!.copyWith(
                     color: Colors.blue,
                   ),
