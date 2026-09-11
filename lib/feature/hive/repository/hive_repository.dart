@@ -4,22 +4,35 @@ import 'package:hive/hive.dart';
 
 class HiveRepository implements BaseHiveRepository {
   HiveRepository();
-  final Box<ChatBot> _chatBot = Hive.box<ChatBot>('chatbots');
+
+  Box<ChatBot> get _chatBot {
+    if (Hive.isBoxOpen('chatbots')) {
+      return Hive.box<ChatBot>('chatbots');
+    }
+    throw StateError('Hive box chatbots has not been opened yet.');
+  }
 
   @override
   Future<void> saveChatBot({required ChatBot chatBot}) async {
-    await _chatBot.put(chatBot.id, chatBot);
+    final box = Hive.isBoxOpen('chatbots')
+        ? Hive.box<ChatBot>('chatbots')
+        : await Hive.openBox<ChatBot>('chatbots');
+    await box.put(chatBot.id, chatBot);
   }
 
   @override
   Future<List<ChatBot>> getChatBots() async {
-    final chatBotBox = await Hive.openBox<ChatBot>('chatBots');
-    final List<ChatBot> chatBotsList = chatBotBox.values.toList();
-    return chatBotsList;
+    final box = Hive.isBoxOpen('chatbots')
+        ? Hive.box<ChatBot>('chatbots')
+        : await Hive.openBox<ChatBot>('chatbots');
+    return box.values.toList();
   }
 
   @override
   Future<void> deleteChatBot({required ChatBot chatBot}) async {
-    await _chatBot.delete(chatBot.id);
+    final box = Hive.isBoxOpen('chatbots')
+        ? Hive.box<ChatBot>('chatbots')
+        : await Hive.openBox<ChatBot>('chatbots');
+    await box.delete(chatBot.id);
   }
 }
