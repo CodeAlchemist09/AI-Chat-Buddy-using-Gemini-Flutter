@@ -30,7 +30,7 @@ class GeminiRepository extends BaseGeminiRepository {
     try {
       final geminiAPIKey = await SecureStorage().getApiKey();
       Object? mapData = {};
-      final model = image == null ? 'gemini-pro' : 'gemini-pro-vision';
+      const model = 'gemini-1.5-flash';
       if (image == null) {
         mapData = {
           'contents': [
@@ -162,13 +162,13 @@ class GeminiRepository extends BaseGeminiRepository {
             : textChunks.length;
         final List<String> currentChunk = textChunks.sublist(i, chunkEnd);
         final response = await dio.post(
-          '$baseUrl/embedding-001:batchEmbedContents?key=$geminiAPIKey',
+          '$baseUrl/text-embedding-004:batchEmbedContents?key=$geminiAPIKey',
           options: Options(headers: {'Content-Type': 'application/json'}),
           data: {
             'requests': currentChunk
                 .map(
                   (text) => {
-                    'model': 'models/embedding-001',
+                    'model': 'models/text-embedding-004',
                     'content': {
                       'parts': [
                         {'text': text},
@@ -206,10 +206,10 @@ class GeminiRepository extends BaseGeminiRepository {
     try {
       final geminiAPIKey = await SecureStorage().getApiKey();
       final response = await dio.post(
-        '$baseUrl/embedding-001:embedContent?key=$geminiAPIKey',
+        '$baseUrl/text-embedding-004:embedContent?key=$geminiAPIKey',
         options: Options(headers: {'Content-Type': 'application/json'}),
         data: jsonEncode({
-          'model': 'models/embedding-001',
+          'model': 'models/text-embedding-004',
           'content': {
             'parts': [
               {'text': userPrompt},
